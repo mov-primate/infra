@@ -1,21 +1,27 @@
+﻿# MovPrimate â€” Docker Compose local
+# Uso: docker compose up -d
+
 services:
+
+  # â”€â”€â”€ Base de datos â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   mongo:
     image: mongo:7
     container_name: mov-primate-mongo
     restart: unless-stopped
+    env_file: .env
     environment:
-      MONGO_INITDB_ROOT_USERNAME: root
-      MONGO_INITDB_ROOT_PASSWORD: example
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
       MONGO_INITDB_DATABASE: movprimate
     ports:
-      - "27017:27017"
+      - "${MONGO_PORT:-27017}:27017"
     volumes:
       - mongo_data:/data/db
       - ./mongo/initdb:/docker-entrypoint-initdb.d:ro
     networks:
       - mov-primate-network
     healthcheck:
-      test: ["CMD-SHELL", "mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok' || mongo --quiet --eval 'db.runCommand({ ping: 1 }).ok'"]
+      test: ["CMD-SHELL", "mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok' || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -28,23 +34,207 @@ services:
     depends_on:
       mongo:
         condition: service_healthy
+    env_file: .env
     environment:
       ME_CONFIG_MONGODB_SERVER: mongo
       ME_CONFIG_MONGODB_PORT: 27017
-      ME_CONFIG_MONGODB_ADMINUSERNAME: root
-      ME_CONFIG_MONGODB_ADMINPASSWORD: example
+      ME_CONFIG_MONGODB_ADMINUSERNAME: ${MONGO_ROOT_USERNAME}
+      ME_CONFIG_MONGODB_ADMINPASSWORD: ${MONGO_ROOT_PASSWORD}
       ME_CONFIG_MONGODB_AUTH_DATABASE: admin
-      ME_CONFIG_BASICAUTH_USERNAME: admin
-      ME_CONFIG_BASICAUTH_PASSWORD: admin
+      ME_CONFIG_BASICAUTH_USERNAME: ${ME_CONFIG_BASICAUTH_USERNAME}
+      ME_CONFIG_BASICAUTH_PASSWORD: ${ME_CONFIG_BASICAUTH_PASSWORD}
       ME_CONFIG_MONGODB_ENABLE_ADMIN: "true"
     ports:
-      - "8081:8081"
+      - "${MONGO_EXPRESS_PORT:-8081}:8081"
     networks:
       - mov-primate-network
 
+  # â”€â”€â”€ Microservicio Alumnos â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  mov-primate-ms-alumnos:
+    build:
+      context: ../mov-primate-ms-alumnos
+      dockerfile: Dockerfile
+    image: mov-primate-ms-alumnos:local
+    container_name: mov-primate-ms-alumnos
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      PORT: 3001
+      MONGODB_URI: mongodb://${MONGO_ROOT_USERNAME}:${MONGO_ROOT_PASSWORD}@mongo:27017/${ALUMNOS_DB}?authSource=admin
+      CLASS_CAPACITY_MAX: ${CLASS_CAPACITY_MAX:-4}
+      CANCELLATION_WINDOW_MINUTES: ${CANCELLATION_WINDOW_MINUTES:-60}
+      ROLES_ALLOWED: ${ROLES_ALLOWED}
+      INITIAL_USER_ROLE: ${INITIAL_USER_ROLE}
+    ports:
+      - "${ALUMNOS_PORT:-3001}:3001"
+    networks:
+      - mov-primate-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:3001/health || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # â”€â”€â”€ Microservicio Agenda â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  mov-primate-ms-agenda:
+    build:
+      context: ../mov-primate-ms-agenda
+      dockerfile: Dockerfile
+    image: mov-primate-ms-agenda:local
+    container_name: mov-primate-ms-agenda
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+      mov-primate-ms-alumnos:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      PORT: 3002
+      MONGODB_URI: mongodb://${MONGO_ROOT_USERNAME}:${MONGO_ROOT_PASSWORD}@mongo:27017/${AGENDA_DB}?authSource=admin
+      ALUMNOS_SERVICE_URL: ${ALUMNOS_SERVICE_URL}
+      CLASS_CAPACITY_MAX: ${CLASS_CAPACITY_MAX:-4}
+      CANCELLATION_WINDOW_MINUTES: ${CANCELLATION_WINDOW_MINUTES:-60}
+    ports:
+      - "${AGENDA_PORT:-3002}:3002"
+    networks:
+      - mov-primate-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:3002/health || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # â”€â”€â”€ API Compartida â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  mov-primate-api:
+    build:
+      context: ../mov-primate-api
+      dockerfile: Dockerfile
+    image: mov-primate-api:local
+    container_name: mov-primate-api
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      PORT: 3003
+      MONGODB_URI: mongodb://${MONGO_ROOT_USERNAME}:${MONGO_ROOT_PASSWORD}@mongo:27017/${API_DB}?authSource=admin
+      ALUMNOS_SERVICE_URL: ${ALUMNOS_SERVICE_URL}
+      CLASS_CAPACITY_MAX: ${CLASS_CAPACITY_MAX:-4}
+      CANCELLATION_WINDOW_MINUTES: ${CANCELLATION_WINDOW_MINUTES:-60}
+      ROLES_ALLOWED: ${ROLES_ALLOWED}
+    ports:
+      - "${API_PORT:-3003}:3003"
+    networks:
+      - mov-primate-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:3003/health || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # â”€â”€â”€ Microservicio Notificaciones â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  mov-primate-ms-notificaciones:
+    build:
+      context: ../mov-primate-ms-notificaciones
+      dockerfile: Dockerfile
+    image: mov-primate-ms-notificaciones:local
+    container_name: mov-primate-ms-notificaciones
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      PORT: 3004
+      MONGODB_URI: mongodb://${MONGO_ROOT_USERNAME}:${MONGO_ROOT_PASSWORD}@mongo:27017/${NOTIFICACIONES_DB}?authSource=admin
+      MAIL_HOST: ${MAIL_HOST}
+      MAIL_PORT: ${MAIL_PORT}
+      MAIL_USER: ${MAIL_USER}
+      MAIL_PASS: ${MAIL_PASS}
+      MAIL_FROM: ${MAIL_FROM}
+      NOTIFICATION_MAX_RETRIES: ${NOTIFICATION_MAX_RETRIES:-3}
+      NOTIFICATION_RETRY_BACKOFF_MS: ${NOTIFICATION_RETRY_BACKOFF_MS:-1000}
+    ports:
+      - "${NOTIFICACIONES_PORT:-3004}:3004"
+    networks:
+      - mov-primate-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:3004/health || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # â”€â”€â”€ BFF â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  mov-primate-bff:
+    build:
+      context: ../mov-primate-bff
+      dockerfile: Dockerfile
+    image: mov-primate-bff:local
+    container_name: mov-primate-bff
+    restart: unless-stopped
+    depends_on:
+      mov-primate-ms-alumnos:
+        condition: service_healthy
+      mov-primate-ms-agenda:
+        condition: service_healthy
+      mov-primate-api:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      PORT: 3000
+      ALUMNOS_SERVICE_URL: ${ALUMNOS_SERVICE_URL}
+      AGENDA_SERVICE_URL: ${AGENDA_SERVICE_URL}
+      API_SERVICE_URL: ${API_SERVICE_URL}
+      NOTIFICACIONES_SERVICE_URL: ${NOTIFICACIONES_SERVICE_URL}
+      CLASS_CAPACITY_MAX: ${CLASS_CAPACITY_MAX:-4}
+      CANCELLATION_WINDOW_MINUTES: ${CANCELLATION_WINDOW_MINUTES:-60}
+    ports:
+      - "${BFF_PORT:-3000}:3000"
+    networks:
+      - mov-primate-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:3000/health || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # â”€â”€â”€ Frontend Angular â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  mov-primate-app:
+    build:
+      context: ../mov-primate-app
+      dockerfile: Dockerfile
+    image: mov-primate-app:local
+    container_name: mov-primate-app
+    restart: unless-stopped
+    depends_on:
+      mov-primate-bff:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      BFF_SERVICE_URL: ${BFF_SERVICE_URL}
+    ports:
+      - "${APP_PORT:-4200}:4200"
+    networks:
+      - mov-primate-network
+
+# â”€â”€â”€ VolÃºmenes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 volumes:
   mongo_data:
+    driver: local
 
+# â”€â”€â”€ Redes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 networks:
   mov-primate-network:
     driver: bridge
+
+
